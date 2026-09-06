@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"regexp"
+	"strconv"
 
 	"featureflags/internal/store"
 )
@@ -107,10 +109,30 @@ func CreateFlag(s *store.Store) http.HandlerFunc {
 	}
 }
 
+// listFlagsLimit returns the maximum number of flags ListFlags may return,
+// read from the FLAGS_LIST_LIMIT environment variable. It defaults to 1000 and
+// clamps to at least 1. An unparseable value falls back to the default.
+func listFlagsLimit() int {
+	raw := os.Getenv("FLAGS_LIST_LIMIT")
+	if raw == "" {
+		return 1000
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return 1000
+	}
+	return n
+}
+
 // ListFlags handles GET /flags.
 func ListFlags(s *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		WriteJSON(w, http.StatusOK, s.List())
+		flags := s.List()
+		limit := listFlagsLimit()
+		if len(flags) > limit {
+			flags = flags[:limit]
+		}
+		WriteJSON(w, http.StatusOK, flags)
 	}
 }
 
@@ -133,8 +155,19 @@ func GetFlag(s *store.Store) http.HandlerFunc {
 	}
 }
 
+// flagStore is the subset of *store.Store that UpdateFlag depends on. It lets
+// the !ok branch of Store.Update be exercised deterministically in tests.
+type flagStore interface {
+	Get(key string) (store.Flag, bool)
+	Update(key string, f store.Flag) (store.Flag, bool)
+}
+
 // UpdateFlag handles PUT /flags/{key}.
 func UpdateFlag(s *store.Store) http.HandlerFunc {
+	return updateFlag(s)
+}
+
+func updateFlag(s flagStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key := r.PathValue("key")
 		if !validKey(key) {
@@ -177,7 +210,11 @@ func UpdateFlag(s *store.Store) http.HandlerFunc {
 			existing.RolloutPercent = *req.RolloutPercent
 		}
 
-		updated, _ := s.Update(key, existing)
+		updated, ok := s.Update(key, existing)
+		if !ok {
+			WriteError(w, http.StatusNotFound, "flag not found")
+			return
+		}
 		WriteJSON(w, http.StatusOK, updated)
 	}
 }

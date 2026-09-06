@@ -249,6 +249,54 @@ func TestListFlagsMultiple(t *testing.T) {
 	}
 }
 
+func TestListFlagsRespectsLimit(t *testing.T) {
+	s := store.NewStore()
+	for i := 0; i < 5; i++ {
+		if err := s.Create(store.Flag{Key: "k" + string(rune('a'+i)), Enabled: true}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	h := ListFlags(s)
+
+	t.Setenv("FLAGS_LIST_LIMIT", "2")
+
+	rec := doRequest(t, h, http.MethodGet, "/flags", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var list []store.Flag
+	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected 2 flags (limited), got %d", len(list))
+	}
+}
+
+func TestListFlagsDefaultLimit(t *testing.T) {
+	s := store.NewStore()
+	for i := 0; i < 3; i++ {
+		if err := s.Create(store.Flag{Key: "k" + string(rune('a'+i)), Enabled: true}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	h := ListFlags(s)
+
+	t.Setenv("FLAGS_LIST_LIMIT", "")
+
+	rec := doRequest(t, h, http.MethodGet, "/flags", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var list []store.Flag
+	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("expected 3 flags (no limit), got %d", len(list))
+	}
+}
+
 func TestGetFlagFound(t *testing.T) {
 	s := store.NewStore()
 	if err := s.Create(store.Flag{Key: "k", Enabled: true, RolloutPercent: 10}); err != nil {
@@ -322,6 +370,45 @@ func TestUpdateFlagDescriptionOnly(t *testing.T) {
 	f := decodeFlag(t, rec)
 	if f.Description != "new" || !f.Enabled || f.RolloutPercent != 50 {
 		t.Fatalf("unexpected merge result: %+v", f)
+	}
+}
+
+// fakeFlagStore implements flagStore so the !ok branch of Store.Update can be
+// reached deterministically: Get reports the flag exists while Update reports
+// it no longer does, which is exactly the concurrent-delete race UpdateFlag
+// must handle.
+type fakeFlagStore struct {
+	existing store.Flag
+	getOK    bool
+	updateOK bool
+}
+
+func (f *fakeFlagStore) Get(key string) (store.Flag, bool) {
+	return f.existing, f.getOK
+}
+
+func (f *fakeFlagStore) Update(key string, flag store.Flag) (store.Flag, bool) {
+	return flag, f.updateOK
+}
+
+func TestUpdateFlagDeletedBetweenGetAndUpdate(t *testing.T) {
+	fs := &fakeFlagStore{
+		existing: store.Flag{Key: "k", Enabled: false},
+		getOK:    true,
+		updateOK: false,
+	}
+	h := updateFlag(fs)
+
+	rec := doRequest(t, h, http.MethodPut, "/flags/k", "k", `{"enabled":true}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var e map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&e); err != nil {
+		t.Fatalf("decode error object: %v", err)
+	}
+	if e["error"] != "flag not found" {
+		t.Fatalf("expected error 'flag not found', got %+v", e)
 	}
 }
 
