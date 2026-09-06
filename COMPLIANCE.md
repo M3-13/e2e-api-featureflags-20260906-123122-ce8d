@@ -1,73 +1,85 @@
-VERDICT: CHANGES_REQUESTED
+VERDICT: APPROVED
 
-## 1. GDPR / Datenschutz
-
-**Befund 1.1 — Log-Injection über nicht sanitisierte URL-Pfade**  
-Schweregrad: hoch  
-
-Die Middleware `internal/middleware/logging.go` protokolliert `r.URL.Path`. Dieses Feld enthält den bereits URL-dekodierten Pfad. Ein Angreifer kann über Pfadsegmente wie `%0A` Steuerzeichen (z. B. Zeilenumbrüche) einschleusen und so die Logdatei manipulieren oder weitere Logzeilen unterschieben. Das konterkariert die Anforderung „Logs enthalten ausschließlich Methode, Pfad und Statuscode“ (AC-18) und ist ein Sicherheitsrisiko für die Integrität der Protokolle.  
-Maßnahme: In `internal/middleware/logging.go` statt `r.URL.Path` den codierten Pfad `r.URL.EscapedPath()` verwenden oder den Wert mit `%q` formatieren, z. B. `log.Printf("%s %q %d", r.Method, r.URL.Path, rw.status)`. Dadurch bleiben legitime Anfragen unverändert, Steuerzeichen werden aber neutralisiert.
-
-**Befund 1.2 — Fehlende dokumentierte Rechtsgrundlage für die Verarbeitung des `user`-Parameters**  
-Schweregrad: mittel  
-
-Der Evaluate-Endpunkt verarbeitet die Nutzer-ID (`user`) transient in Form eines Hashs. Eine Speicherung erfolgt nicht, und die ID wird nicht geloggt. Das ist datenschutzfreundlich. Es fehlt jedoch eine dokumentierte Rechtsgrundlage für diese Verarbeitung, etwa Art. 6 Abs. 1 lit. f DSGVO (berechtigtes Interesse an der deterministischen Feature-Auslieferung) oder Art. 6 Abs. 1 lit. b DSGVO (Vertragserfüllung), sofern der Dienst gegenüber dem Nutzer eine Leistung erbringt.  
-Maßnahme: In `README.md` einen Datenschutz-Abschnitt ergänzen: „Der Query-Parameter `user` wird ausschließlich transient zur Berechnung des Feature-Rollouts verarbeitet, nicht gespeichert, nicht geloggt und nach der Antwort verworfen. Rechtsgrundlage: berechtigtes Interesse gemäß Art. 6 Abs. 1 lit. f DSGVO.“  
-
-**Positiv**  
-- `user` wird nicht in Logs geschrieben; Logs enthalten nur Methode, Pfad und Statuscode.  
-- Der Evaluate-Endpunkt verändert den Store nicht und speichert weder Nutzer-IDs noch Evaluationsergebnisse.  
-- Keine PII im Klartext in Logs oder Antworten.
+Strukturierter Compliance-Bericht für das Feature-Flag-Service Backend (Go, reine REST-API ohne Endnutzer-UI).  
+Geprüft wurde ausschließlich der vorgelegte Code-/Spec-Stand. Governance-Dokumente wie `COMPLIANCE.md`, `SECURITY.md` oder `README.md` sind als Dateien vorhanden, wurden hier aber nicht inhaltlich bewertet.
 
 ---
 
-## 2. EU Cyber Resilience Act (CRA)
+## 1. DSGVO / Datenschutz
 
-**Befund 2.1 — Schreibende Endpunkte ohne Authentifizierung/Autorisierung**  
-Schweregrad: hoch  
+**Gesamtbewertung:** Der Service ist datenschutzfreundlich gebaut. Personenbezogene Daten im engeren Sinne entstehen nur über den Query-Parameter `user` des Evaluate-Endpunkts. Dieser wird ausschließlich transient für einen Hash verwendet, nicht gespeichert, nicht geloggt und nicht in Antworten zurückgegeben. Es gibt keine Cookies, kein Tracking, keine Persistenz von Nutzerdaten.
 
-`POST /flags`, `PUT /flags/{key}` und `DELETE /flags/{key}` sind ohne jeden Zugriffsschutz implementiert (`main.go`). Jeder mit Netzwerkzugriff kann Flags anlegen, verändern oder löschen. Das verletzt die CRA-Anforderung an Security by Design/Default, da das Produkt in einer unsicheren Standardkonfiguration ausgeliefert wird, und kann zu Integritäts- und Verfügbarkeitsverlusten führen.  
-Maßnahme: Eine Authentifizierungs-/Autorisierungs-Middleware für die Verwaltungsrouten ergänzen, z. B. API-Key- oder Basic-Auth-Prüfung, oder den Server alternativ nur an ein lokales Interface binden (`http.ListenAndServe("127.0.0.1:"+port, handler)`), falls das Produkt rein intern betrieben wird. Die gewählte Variante ist in `README.md` zu dokumentieren.
+### Befund DSGVO-1 – Freitextfeld `description` ohne Zweckbindung/Schranke  
+- **Schweregrad:** mittel  
+- **Betroffene Dateien:** `internal/handlers/flags.go`, `internal/store/store.go`  
+- **Sachverhalt:** Das Feld `description` akzeptiert beliebigen Freitext und wird unverschlüsselt im Speicher gehalten und über `GET /flags` bzw. `GET /flags/{key}` ausgeliefert. Es besteht keine technische oder dokumentierte Beschränkung, dass hier keine personenbezogenen Daten abgelegt werden dürfen.  
+- **Konkrete Abhilfe:**  
+  - In `README.md` oder `COMPLIANCE.md` einen klaren Hinweis aufnehmen: „`description` ist für technische Beschreibungen bestimmt und darf keine personenbezogenen Daten enthalten.“  
+  - Optional zusätzlich eine maximale Länge für `description` einführen (z. B. 1.000 Zeichen) und in der Validierung in `TestCreateFlag...`/`TestUpdateFlag...` abbilden.  
+  - Alternativ das Feld ganz entfernen, falls es für den Betrieb nicht benötigt wird (Datenminimierung).  
 
-**Befund 2.2 — Fehlende dokumentierte Sicherheitseigenschaften, SBOM und Update-/Patch-Prozess**  
-Schweregrad: mittel  
+### Befund DSGVO-2 – Rechtsgrundlage für die Verarbeitung der `user`-ID nicht dokumentiert  
+- **Schweregrad:** niedrig  
+- **Betroffene Datei:** `internal/handlers/evaluate.go`  
+- **Sachverhalt:** Der Parameter `user` ist regelmäßig als personenbezogenes Datum einzuordnen (Nutzerkennung). Er wird für die Hash-Berechnung verarbeitet, aber sofort verworfen. Der Code selbst enthält keine Dokumentation der Rechtsgrundlage oder des Zwecks.  
+- **Konkrete Abhilfe:**  
+  - In `COMPLIANCE.md` unter „Verarbeitungen“ einen Abschnitt zum Evaluate-Endpunkt ergänzen:  
+    - Zweck: deterministische Rollout-Entscheidung je Nutzer ohne Speicherung.  
+    - Rechtsgrundlage: berechtigtes Interesse nach Art. 6 Abs. 1 lit. f DSGVO (empfohlen) bzw. Auftragsverarbeitungs-/Nutzungsbedingungen des Betreibers.  
+    - Speicherdauer: keine (rein transient, keine Persistenz).  
+    - Empfänger: keine.  
 
-Der Code selbst ist schlank und nutzt keine externen Abhängigkeiten. Es fehlen jedoch die unter der CRA geforderten dokumentierten Sicherheitseigenschaften, eine Software-Stückliste (SBOM) und Angaben zum Schwachstellenmanagement und zu Updates.  
-Maßnahme: In `README.md` einen Abschnitt „Security & Compliance“ ergänzen:  
-- Verwendete Komponenten: Go-Standardbibliothek, keine externen Module — SBOM via `go list -m all` oder manuell (`go.mod`).  
-- Unterstützter Betriebszeitraum und Art der Update-Bereitstellung (z. B. neues Deployment bei Codeänderungen).  
-- Kontakt/Prozess für Sicherheitsmeldungen (z. B. `security@example.com`).  
-- Dokumentierte Sicherheitseigenschaften: Body-Limit (1 MiB), Input-Validierung, Fehlerobjekte ohne interne Details, Logging ohne Query-Parameter, thread-sicherer In-Memory-Store.
+### Befund DSGVO-3 – Logging des Panic-Werts in `recover.go` potenziell unsauber  
+- **Schweregrad:** niedrig  
+- **Betroffene Datei:** `internal/middleware/recover.go`  
+- **Sachverhalt:** `log.Printf("panic recovered: %v", rec)` gibt den rohen Panic-Wert aus. Aktuell sind keine konkreten Personendaten-Panics im Code sichtbar, aber bei künftigen Änderungen könnte ein Panic-Wert mittelbar personenbezogene oder vertrauliche Daten enthalten.  
+- **Konkrete Abhilfe:**  
+  - Log nur die Tatsache „panic recovered“ und optional einen separaten, internen Fehlercode ohne Rohwert.  
+  - Falls der Wert für das Debugging nötig ist, in ein kontrolliertes, zugriffsbeschränktes Log schreiben und nicht in `log.Printf` der Anwendung.  
 
-**Positiv**  
-- Keine externen Abhängigkeiten; reduziertes Supply-Chain-Risiko.  
-- Body-Limit und Eingabevalidierung vorhanden.  
-- Fehlerantworten geben keine internen Implementierungsdetails preis.
+---
+
+## 2. Cyber Resilience Act (CRA)
+
+**Gesamtbewertung:** Die Sicherheitsanforderungen sind überwiegend erfüllt: Eingabevalidierung, Body-Limit, Authentifizierung für schreibende Endpunkte, konstante Zeitvergleiche, kein Logging sensibler Query-Parameter, Recover-Middleware, sichere Standardwerte. Das Produkt ist eine reine Softwarekomponente ohne KI-Komponente.
+
+### Befund CRA-1 – Keine sichtbare SBOM / Abhängigkeitsdokumentation  
+- **Schweregrad:** niedrig  
+- **Betroffene Datei:** `go.mod` bzw. Projekt-/CI-Konfiguration  
+- **Sachverhalt:** Das Produkt nutzt nur die Go-Standardbibliothek; `go.mod` enthält keine externen Abhängigkeiten. Eine förmliche SBOM (z. B. CycloneDX oder SPDX) ist im sichtbaren Code nicht hinterlegt.  
+- **Konkrete Abhilfe:**  
+  - In die CI-Pipeline einen SBOM-Export aufnehmen (`go list -m -json all` oder ein SBOM-Tool) und die Datei als Build-Artefakt ablegen.  
+  - In `COMPLIANCE.md` oder `SECURITY.md` einen Abschnitt „SBOM / Dependencies“ ergänzen, der auf das Artefakt verweist und bestätigt, dass keine externen Laufzeitabhängigkeiten bestehen.  
+
+### Befund CRA-2 – Update-/Patch-Mechanismus nicht im Code sichtbar  
+- **Schweregrad:** niedrig  
+- **Betroffene Datei:** `main.go`, Deployment-Konfiguration  
+- **Sachverhalt:** CRA verlangt für Produkte mit digitalen Elementen eine dokumentierte Fähigkeit, Sicherheitsupdates aufzuspielen. Im Code selbst ist dies naturgemäß nicht enthalten. Der Betrieb auf `127.0.0.1` und die einfache Binary-Struktur ermöglichen Updates, aber eine Dokumentation fehlt im sichtbaren Stand.  
+- **Konkrete Abhilfe:**  
+  - In `COMPLIANCE.md` oder `SECURITY.md` festhalten, wie Updates ausgeliefert werden (z. B. „neue Binary-Version einspielen, Prozess neu starten, Konfiguration über Umgebungsvariablen“).  
+  - Optional einen `/version`- oder `/healthz`-Hinweis auf Versionsstand ergänzen, um installierte Versionen prüfbar zu machen.  
 
 ---
 
 ## 3. EU AI Act
 
-Nicht anwendbar. Der Dienst enthält kein KI-System im Sinne des AI Act. Keine Befunde.
+**Gesamtbewertung:** Nicht anwendbar. Der Service enthält keine KI-Funktion, kein maschinelles Lernen, keine generative Komponente und keine automatisierte Entscheidungsfindung im Sinne des AI Act. Es besteht keine Kennzeichnungs- oder Transparenzpflicht.
 
 ---
 
-## 4. Pflichttexte & UI (Impressum, Datenschutzerklärung, Cookie-Banner)
+## 4. Pflichttexte & Benutzeroberfläche
 
-Nicht anwendbar. Es handelt sich um ein reines Backend ohne öffentliche Web-UI. Ein Impressum, eine Datenschutzerklärung für Webseitenbesucher oder ein Cookie-Banner sind für diesen Projekttyp nicht erforderlich. Betreiberpflichten für die Bereitstellung der API (z. B. Datenschutzhinweise gegenüber API-Kunden) liegen beim Betreiber, nicht im Code.
+**Gesamtbewertung:** Nicht anwendbar. Es handelt sich um eine reine REST-API ohne öffentliche Web-Oberfläche, ohne Cookies, ohne Endnutzer-Interaktion. Daher bestehen keine Pflichten für Impressum, AGB, Datenschutzerklärung als Webseitentext, Cookie-Banner oder Widerrufsbelehrung.  
+_Hinweis:_ Unabhängig davon sollte der Betreiber für seine interne Verarbeitung die oben genannten Dokumentationen in `COMPLIANCE.md` führen (siehe DSGVO-Befunde).
 
 ---
 
 ## 5. Barrierefreiheit (WCAG / BITV / EAA)
 
-Nicht anwendbar. Keine öffentliche Web-UI vorhanden. Keine Befunde.
+**Gesamtbewertung:** Nicht anwendbar. Die API hat keine öffentliche HTML-Oberfläche. Es gibt keine visuellen, auditiven oder interaktiven Elemente für Endnutzer.
 
 ---
 
-## 6. Sonstige Beobachtung
+## Zusammenfassung
 
-**Befund 6.1 — Inkonsistente Key-Validierung im Evaluate-Handler**  
-Schweregrad: niedrig  
-
-`internal/handlers/evaluate.go` prüft den Pfad-Key nicht mit `validKey`, anders als `GetFlag`, `UpdateFlag` und `DeleteFlag`. Da der Store nur über validierende Schreibpfade befüllt wird, entsteht derzeit keine direkte Gefahr. Für Konsistenz und zur Vermeidung von Sonderzeichen im Pfad sollte `validKey` auch hier angewendet werden.  
-Maßnahme: Zu Beginn von `EvaluateFlag` nach dem Auslesen des Keys `if !validKey(key) { WriteError(w, http.StatusBadRequest, "invalid key"); return }` einfügen.
+Der Code erfüllt die fachlichen und sicherheitsrelevanten Akzeptanzkriterien. Es wurden keine kritischen oder hohen Rechtsrisiken festgestellt. Die Hinweise betreffen vor allem die Dokumentation (Rechtsgrundlage, Zweckbindung von Freitextfeldern) und optionale Verbesserungen im Panic-Logging sowie die formale SBOM-Bereitstellung. Diese sind als niedrig bis mittel eingestuft und können vor oder nach dem ersten Release umgesetzt werden, ohne den Betrieb zu blockieren.
