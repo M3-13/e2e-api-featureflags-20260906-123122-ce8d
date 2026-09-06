@@ -1,66 +1,107 @@
-VERDICT: BLOCKED
+VERDICT: CHANGES_REQUESTED
 
-## Security-Report
+## Sicherheitsbewertung
 
-### 1) Secrets
-Keine hartkodierten Schlüssel, Passwörter, Tokens oder URLs im sichtbaren Code. Zugriffs-Logs geben bewusst nur Methode, Pfad (ohne Query-String) und Statuscode aus – der `user`-Parameter wird nicht protokolliert.  
-**Befund:** Keine.
+**Scanner-Abdeckung:** Für diesen Projekttyp wurde laut Ausgabe kein Scanner ausgeführt (`no applicable security scanners for this project type`). Die Bewertung beruht daher auf manueller Code-Analyse. Es wurden keine bekannten CVEs oder Drittanbieter-Abhängigkeiten gefunden, da das Projekt ausschließlich die Go-Standardbibliothek nutzt.
 
-### 2) Injection & Eingaben
-- **JSON-Bodies:** POST/PUT verwenden `http.MaxBytesReader` (1 MiB) und `json.Decoder` auf strukturierte Go-Typen. Keine unsichere Deserialisierung.  
-- **Flag-Keys:** POST, GET, PUT und DELETE validieren Keys mittels `validKey` (max. 128 Zeichen, `[A-Za-z0-9._-]`).  
-- **SQL/Command/Path-Injection:** Nicht anwendbar – In-Memory-Store, keine Shell-/DB-Aufrufe, kein Dateisystemzugriff.  
-- **SSRF/XSS:** Keine externen Aufrufe; reine JSON-API ohne HTML, `Content-Type: application/json; charset=utf-8` wird gesetzt.
+**Positiv geprüft:**
+- Keine hartkodierten Secrets; der Admin-API-Key kommt aus `ADMIN_API_KEY`.
+- Passwort-/Token-Vergleich erfolgt mit `crypto/subtle.ConstantTimeCompare`.
+- Flag-Keys werden streng validiert: `[A-Za-z0-9._-]`, max. 128 Zeichen.
+- POST-/PUT-Bodies werden über `http.MaxBytesReader` auf 1 MiB begrenzt.
+- Fehlerantworten sind generisch und enthalten keine internen Fehlermeldungen/Stacktraces.
+- JSON-Antworten setzen `Content-Type: application/json; charset=utf-8`.
+- Access-Logs enthalten nur Methode, escaped Path ohne Query-String und Statuscode; der `user`-Parameter wird nicht geloggt.
+- Evaluate verändert den Store nicht und persistiert weder Nutzer-IDs noch Ergebnisse.
 
-**Befunde hierzu:** keine kritischen Lücken. Einzelne Härtungen siehe unten.
+## Festgestellte Befunde
 
-### 3) AuthN/AuthZ
-**Kritischer Befund:** Der Dienst besitzt keinerlei Authentifizierung oder Autorisierung. `main.go` registriert sämtliche Routen (`POST /flags`, `PUT /flags/{key}`, `DELETE /flags/{key}` usw.) ungeschützt. Jeder, der den Port erreichen kann, kann Flags anlegen, ändern, löschen und auslesen.  
-- **Betroffene Stelle:** `main.go` (Routenregistrierung und `http.ListenAndServe`).  
-- **Konkrete Lösung:** Eine Authentifizierungs-/Autorisierungs-Middleware einführen (z. B. statischer API-Key über Umgebungsvariable, `Authorization`-Header prüfen) und alle mutierenden bzw. auch lesenden Endpunkte dahinter schalten. Alternativ/ergänzend den Dienst nur auf `127.0.0.1` binden (siehe 5), wenn er ausschließlich lokal genutzt wird – dies allein schützt jedoch nicht gegen lokale Angreifer. Der Service muss mit den vorhandenen Tests weiterhin funktionieren, daher die Auth auf der `ServeMux`-Ebene ergänzen; Handler-Tests bleiben unberührt.
+### 1. Medium — Administrative Lese-Endpunkte sind unauthentifiziert erreichbar
 
-### 4) Dependencies
-Keine externen Abhängigkeiten sichtbar; `go.mod` ist klein (vermutlich nur Modulname und Go-Version). Scanner-Output war nicht vorhanden (`go-backend`, keine semgrep/bandit etc.).  
-**Befund:** Keine, aber der Bereich konnte mangels Scanner nicht maschinell geprüft werden.
+**Datei/Stelle:** `main.go`, Route-Registrierung:
+```go
+mux.HandleFunc("GET /flags", handlers.ListFlags(s))
+mux.HandleFunc("GET /flags/{key}", handlers.GetFlag(s))
+```
 
-### 5) Konfiguration & Transport
-**Hoher Befund:** `main.go` startet mit `http.ListenAndServe(":"+port, handler)` –  
-- lauscht damit auf **allen** Interfaces (0.0.0.0), nicht nur localhost;  
-- nutzt **kein TLS** – Kommunikation inkl. Flag-Daten und Authentifizierungsinformationen (sofern künftig vorhanden) ist unverschlüsselt.  
-- **Betroffene Stelle:** `main.go`, Zeile `http.ListenAndServe`.  
-- **Konkrete Lösung:** `ListenAndServeTLS` mit Zertifikaten verwenden oder einen TLS-terminierenden Reverse Proxy davorschalten. Falls der Dienst nur intern gebraucht wird, auf `127.0.0.1` binden: `http.ListenAndServe("127.0.0.1:"+port, handler)`. Bei Deployment hinter einem Reverse Proxy muss der Proxy die Netzwerksegmentierung/ACL übernehmen.
+**Beschreibung:** `POST`, `PUT` und `DELETE` werden durch `middleware.Auth` geschützt, `GET /flags` und `GET /flags/{key}` jedoch nicht. Diese Endpunkte liefern sämtliche Flag-Definitionen inklusive `description` und `rollout_percent`. Das ist ein inkonsistenter Authentifizierungs-/Autorisierungszustand und kann zu Information Disclosure führen, wenn der Dienst hinter einem Reverse-Proxy entfernt erreichbar gemacht wird. Die Bind-Adresse `127.0.0.1` reduziert das Risiko bei direkter Ausführung, hebt die Schwäche aber nicht auf.
 
----
-
-### Weitere Findings (niedriger Schweregrad / Härtung)
-
-#### M1 – `EvaluateFlag` validiert den Flag-Key nicht
-- **Schweregrad:** Medium  
-- **Datei/Stelle:** `internal/handlers/evaluate.go`, erster Block vor `s.Get(key)`.  
-- **Problem:** `GET /flags/{key}/evaluate` prüft `key` nicht mit `validKey`. Ungültige Keys führen derzeit zu `404` (da sie nicht im Store existieren), verletzen aber AC-17 und könnten bei späteren Erweiterungen (z. B. Persistenz) zu Problemen führen.  
-- **Fix:** `validKey(key)` prüfen und bei ungültigem Key `WriteError(w, http.StatusBadRequest, "invalid key")` zurückgeben.
-
-#### M2 – `UpdateFlag` ignoriert den `bool`-Rückgabewert von `Store.Update`
-- **Schweregrad:** Low  
-- **Datei/Stelle:** `internal/handlers/flags.go`, Zeile `updated, _ := s.Update(key, existing)`.  
-- **Problem:** Zwischen `Get` und `Update` könnte ein konkurrierender `Delete` stattfinden. `Update` liefert dann `(Flag{}, false)`; der Handler antwortet trotzdem mit `200` und leerem Flag. Kein direkter Exploit, aber inkonsistentes Verhalten.  
-- **Fix:** `updated, ok := s.Update(...)` prüfen; bei `!ok` mit `404`/`409` antworten.
-
-#### M3 – Kein Panic-Recovery
-- **Schweregrad:** Low (Härtung)  
-- **Datei/Stelle:** `main.go`, Middleware-Kette.  
-- **Problem:** Eine unerwartete Panic in einem Handler beendet den gesamten Prozess.  
-- **Fix:** Eine `recover`-Middleware ergänzen, die einen `500`-Fehler loggt und zurückgibt, ohne den Prozess zu crashen.
-
-#### M4 – `ListFlags` ohne Pagination/Limit
-- **Schweregrad:** Low  
-- **Datei/Stelle:** `internal/handlers/flags.go`, `ListFlags`.  
-- **Problem:** Bei sehr vielen Flags kann die Antwort unbegrenzt wachsen und Speicher/CPU belasten.  
-- **Fix:** Pagination oder ein konfigurierbares Limit einführen (unter Beibehaltung der aktuellen Funktionalität für kleine Datenmengen).
+**Konkreter Fix:**
+```go
+mux.Handle("GET /flags", middleware.Auth(handlers.ListFlags(s)))
+mux.Handle("GET /flags/{key}", middleware.Auth(handlers.GetFlag(s)))
+```
+`GET /healthz` und `GET /flags/{key}/evaluate` bleiben öffentlich, damit die produktiv genutzte Evaluierungsfunktion ohne Admin-Key funktioniert.
 
 ---
 
-### Zusammenfassung
-Die Implementierung ist sauber in Bezug auf Eingabevalidierung, JSON-Behandlung, Größenbegrenzung und Logging-Datenschutz. Es existieren jedoch **kritische Lücken bei Authentifizierung und Transportverschlüsselung**, die ausnutzbar sind, sobald der Dienst nicht ausschließlich in einer abgeschotteten Umgebung läuft. Daher wird das Produkt in dieser Form nicht freigegeben.
+### 2. Low — JSON-Dekodierer akzeptiert zusätzliche Daten nach dem JSON-Dokument
 
-**Verdict:** BLOCKED
+**Datei/Stelle:** `internal/handlers/flags.go`, `decodeJSONBody`.
+
+**Beschreibung:** `json.Decoder.Decode` liest genau ein JSON-Dokument. Überschüssige Daten am Ende des Bodys werden ignoriert. Dadurch könnte beispielsweise ein Body der Form `{"key":"k","enabled":true}garbage` als gültig akzeptiert werden. Strenges Parsen verhindert Überraschungen und mögliche Smuggling-/Validierungsumgehungen.
+
+**Konkreter Fix:** Statt des Decoders den begrenzten Body vollständig lesen und mit `json.Unmarshal` parsen, da `json.Unmarshal` nachfolgende Nicht-Whitespace-Zeichen ablehnt. Alternativ nach `Decode` prüfen, ob noch ein weiterer JSON-Token vorhanden ist, und dann mit `400 invalid JSON body` antworten.
+
+---
+
+### 3. Low — `user`-Query-Parameter ohne Längenbegrenzung
+
+**Datei/Stelle:** `internal/handlers/evaluate.go`, Zeile ca. 21:
+```go
+user := r.URL.Query().Get("user")
+...
+h.Write([]byte(key + ":" + user))
+```
+
+**Beschreibung:** Der `user`-Parameter wird nur auf `""` geprüft, aber nicht auf eine sinnvolle Maximallänge. Da `EvaluateFlag` öffentlich ist, kann ein entfernter Client einen sehr langen Query-String senden und so unnötige Allokationen sowie Hash-Last erzeugen. `net/http` begrenzt Header in der Standardeinstellung zwar auf ca. 1 MiB, eine applikationsseitige Begrenzung ist aber robustere Härtung.
+
+**Konkreter Fix:**
+```go
+const maxUserLen = 256
+
+user := r.URL.Query().Get("user")
+if user == "" {
+    WriteError(w, http.StatusBadRequest, "user is required")
+    return
+}
+if len(user) > maxUserLen {
+    WriteError(w, http.StatusBadRequest, "user is too long")
+    return
+}
+```
+Die Grenze mit der tatsächlich erwarteten Nutzer-ID-Form (E-Mail, UUID etc.) abstimmen.
+
+---
+
+### 4. Low — HTTP-Server ohne Timeouts
+
+**Datei/Stelle:** `main.go`, letzter Abschnitt:
+```go
+if err := http.ListenAndServe("127.0.0.1:"+port, handler); err != nil {
+```
+
+**Beschreibung:** `http.ListenAndServe` setzt keine `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout` oder `IdleTimeout`. Damit ist der Dienst anfällig für Slow-Client-/Slowloris-artige Verbindungserschöpfung, insbesondere auf den öffentlich erreichbaren Endpunkten.
+
+**Konkreter Fix:**
+```go
+srv := &http.Server{
+    Addr:              "127.0.0.1:" + port,
+    Handler:           handler,
+    ReadHeaderTimeout: 5 * time.Second,
+    ReadTimeout:       10 * time.Second,
+    WriteTimeout:      10 * time.Second,
+    IdleTimeout:       60 * time.Second,
+}
+if err := srv.ListenAndServe(); err != nil {
+    log.Fatalf("server error: %v", err)
+}
+```
+
+---
+
+## Zusammenfassung
+
+Die Implementierung erfüllt die wesentlichen Sicherheitsanforderungen aus der Spezifikation: Eingabevalidierung, Body-Limit, eine generische Fehlerstruktur, Logging ohne PII und ein konstantzeitlicher API-Key-Vergleich sind vorhanden. Blockierende Schwachstellen wie Injection/RCE, hartkodierte Secrets oder ein Auth-Bypass wurden nicht gefunden.
+
+Die ungeschützten administrativen Lese-Endpunkte sind jedoch ein mittleres Informationsoffenlegungsrisiko und sollten vor Auslieferung behoben werden.
