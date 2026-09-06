@@ -78,8 +78,10 @@ Verarbeitung ist das berechtigte Interesse gemäß Art. 6 Abs. 1 lit. f DSGVO.
 - **Komponenten**: Es kommen ausschließlich Pakete der Go-Standardbibliothek
   zum Einsatz; es werden keine externen Module verwendet. Ein SBOM lässt sich
   direkt aus `go.mod` bzw. via `go list -m all` ableiten.
-- **Betrieb & Updates**: Sicherheits- und Funktionsupdates werden über ein
-  neues Deployment bereitgestellt, sobald Codeänderungen eingespielt werden.
+- **Unterstützter Betriebszeitraum**: Unterstützt wird die jeweils aktuell
+  ausgerollte Version (Go >= 1.22). Sicherheits- und Funktionsupdates werden
+  über ein neues Deployment bereitgestellt, sobald Codeänderungen eingespielt
+  werden; ältere Versionen werden damit abgelöst.
 - **Sicherheitskontakt**: Meldungen zu Sicherheitslücken bitte an
   security@example.com.
 - **Sicherheitseigenschaften**:
