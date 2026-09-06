@@ -23,6 +23,6 @@ func Logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rw, r)
-		log.Printf("%s %s %d", r.Method, r.URL.Path, rw.status)
+		log.Printf("%s %q %d", r.Method, r.URL.EscapedPath(), rw.status)
 	})
 }

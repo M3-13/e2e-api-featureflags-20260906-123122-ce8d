@@ -56,3 +56,30 @@ func TestLoggingPreservesResponse(t *testing.T) {
 		t.Fatalf("expected status 201, got %d", rec.Code)
 	}
 }
+
+func TestLoggingEscapesPathControlCharacters(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(nil)
+
+	handler := Logging(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/flags/foo%0Abar", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	output := buf.String()
+	line := strings.TrimSuffix(output, "\n")
+	if strings.Count(line, "\n") != 0 {
+		t.Fatalf("expected single log line with no newline in the path, got %q", output)
+	}
+	if !strings.Contains(line, "%0A") {
+		t.Fatalf("expected escaped path to preserve %q, got %q", "%0A", line)
+	}
+	if strings.Contains(line, "/flags/foo\nbar") {
+		t.Fatalf("expected path not to contain a decoded newline, got %q", line)
+	}
+}
