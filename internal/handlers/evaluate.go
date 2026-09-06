@@ -13,6 +13,11 @@ import (
 func EvaluateFlag(s *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key := r.PathValue("key")
+		if !validKey(key) {
+			WriteError(w, http.StatusBadRequest, "invalid key")
+			return
+		}
+
 		user := r.URL.Query().Get("user")
 		if user == "" {
 			WriteError(w, http.StatusBadRequest, "user is required")
