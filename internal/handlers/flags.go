@@ -176,11 +176,10 @@ func UpdateFlag(s *store.Store) http.HandlerFunc {
 func DeleteFlag(s *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key := r.PathValue("key")
-		if _, ok := s.Get(key); !ok {
+		if !s.Delete(key) {
 			WriteError(w, http.StatusNotFound, "flag not found")
 			return
 		}
-		s.Delete(key)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

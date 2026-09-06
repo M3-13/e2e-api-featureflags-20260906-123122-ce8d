@@ -81,5 +81,5 @@ func (s *Store) Delete(key string) bool {
 		return false
 	}
 	delete(s.flags, key)
-	return false
+	return true
 }
