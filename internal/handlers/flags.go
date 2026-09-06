@@ -155,8 +155,19 @@ func GetFlag(s *store.Store) http.HandlerFunc {
 	}
 }
 
+// flagStore is the subset of *store.Store that UpdateFlag depends on. It lets
+// the !ok branch of Store.Update be exercised deterministically in tests.
+type flagStore interface {
+	Get(key string) (store.Flag, bool)
+	Update(key string, f store.Flag) (store.Flag, bool)
+}
+
 // UpdateFlag handles PUT /flags/{key}.
 func UpdateFlag(s *store.Store) http.HandlerFunc {
+	return updateFlag(s)
+}
+
+func updateFlag(s flagStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key := r.PathValue("key")
 		if !validKey(key) {

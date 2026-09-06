@@ -373,22 +373,42 @@ func TestUpdateFlagDescriptionOnly(t *testing.T) {
 	}
 }
 
+// fakeFlagStore implements flagStore so the !ok branch of Store.Update can be
+// reached deterministically: Get reports the flag exists while Update reports
+// it no longer does, which is exactly the concurrent-delete race UpdateFlag
+// must handle.
+type fakeFlagStore struct {
+	existing store.Flag
+	getOK    bool
+	updateOK bool
+}
+
+func (f *fakeFlagStore) Get(key string) (store.Flag, bool) {
+	return f.existing, f.getOK
+}
+
+func (f *fakeFlagStore) Update(key string, flag store.Flag) (store.Flag, bool) {
+	return flag, f.updateOK
+}
+
 func TestUpdateFlagDeletedBetweenGetAndUpdate(t *testing.T) {
-	s := store.NewStore()
-	if err := s.Create(store.Flag{Key: "k", Enabled: false}); err != nil {
-		t.Fatalf("seed: %v", err)
+	fs := &fakeFlagStore{
+		existing: store.Flag{Key: "k", Enabled: false},
+		getOK:    true,
+		updateOK: false,
 	}
+	h := updateFlag(fs)
 
-	// Simulate a concurrent delete: the handler's Get succeeds, then the flag
-	// is removed before Update runs.
-	if !s.Delete("k") {
-		t.Fatalf("delete: %v", "flag not present")
-	}
-
-	h := UpdateFlag(s)
 	rec := doRequest(t, h, http.MethodPut, "/flags/k", "k", `{"enabled":true}`)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var e map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&e); err != nil {
+		t.Fatalf("decode error object: %v", err)
+	}
+	if e["error"] != "flag not found" {
+		t.Fatalf("expected error 'flag not found', got %+v", e)
 	}
 }
 
