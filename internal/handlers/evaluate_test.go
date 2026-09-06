@@ -96,6 +96,28 @@ func TestEvaluateFlagRolloutZero(t *testing.T) {
 	}
 }
 
+func TestEvaluateFlagInvalidKey(t *testing.T) {
+	s := store.NewStore()
+	handler := EvaluateFlag(s)
+
+	req := httptest.NewRequest(http.MethodGet, "/flags/bad!key/evaluate?user=test", nil)
+	req.SetPathValue("key", "bad!key")
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["error"] == "" {
+		t.Fatalf("expected JSON error object, got %v", body)
+	}
+}
+
 func TestEvaluateFlagUnknownKey(t *testing.T) {
 	s := store.NewStore()
 	handler := EvaluateFlag(s)
