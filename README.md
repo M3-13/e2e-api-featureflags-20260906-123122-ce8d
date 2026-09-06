@@ -63,3 +63,32 @@ Flag-JSON:
 - Deterministischer Evaluate-Endpunkt pro Nutzer
 - Zugriffs-Logging als Middleware (Methode, Pfad ohne Query-String, Statuscode)
 - Saubere Statuscodes und JSON-Fehlerobjekte
+
+## Datenschutz
+
+Der Query-Parameter `user` des Evaluate-Endpunkts wird ausschließlich
+**transient** verarbeitet, um die Feature-Rollout-Entscheidung zu berechnen.
+Er wird weder gespeichert noch in Logs geschrieben und unmittelbar nach der
+Antwort verworfen. Der Endpunkt verändert den Flag-Store nicht und hält keine
+Nutzer-IDs oder Evaluationsergebnisse vor. Rechtsgrundlage für diese
+Verarbeitung ist das berechtigte Interesse gemäß Art. 6 Abs. 1 lit. f DSGVO.
+
+## Security & Compliance
+
+- **Komponenten**: Es kommen ausschließlich Pakete der Go-Standardbibliothek
+  zum Einsatz; es werden keine externen Module verwendet. Ein SBOM lässt sich
+  direkt aus `go.mod` bzw. via `go list -m all` ableiten.
+- **Unterstützter Betriebszeitraum**: Unterstützt wird die jeweils aktuell
+  ausgerollte Version (Go >= 1.22). Sicherheits- und Funktionsupdates werden
+  über ein neues Deployment bereitgestellt, sobald Codeänderungen eingespielt
+  werden; ältere Versionen werden damit abgelöst.
+- **Sicherheitskontakt**: Meldungen zu Sicherheitslücken bitte an
+  security@example.com.
+- **Sicherheitseigenschaften**:
+  - 1-MiB-Body-Limit für POST- und PUT-Anfragen (413 bei Überschreitung)
+  - Eingabevalidierung von Keys und Request-Bodies
+  - Fehlerobjekte ohne interne Details, Stacktraces oder Implementierungsdetails
+  - Logging ohne Query-Parameter (nur Methode, Pfad und Statuscode)
+  - Thread-sicherer In-Memory-Store
+  - API-Key-Schutz der schreibenden Endpunkte (`ADMIN_API_KEY`)
+  - Bindung des Servers an `127.0.0.1`
