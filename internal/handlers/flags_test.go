@@ -249,6 +249,54 @@ func TestListFlagsMultiple(t *testing.T) {
 	}
 }
 
+func TestListFlagsRespectsLimit(t *testing.T) {
+	s := store.NewStore()
+	for i := 0; i < 5; i++ {
+		if err := s.Create(store.Flag{Key: "k" + string(rune('a'+i)), Enabled: true}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	h := ListFlags(s)
+
+	t.Setenv("FLAGS_LIST_LIMIT", "2")
+
+	rec := doRequest(t, h, http.MethodGet, "/flags", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var list []store.Flag
+	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("expected 2 flags (limited), got %d", len(list))
+	}
+}
+
+func TestListFlagsDefaultLimit(t *testing.T) {
+	s := store.NewStore()
+	for i := 0; i < 3; i++ {
+		if err := s.Create(store.Flag{Key: "k" + string(rune('a'+i)), Enabled: true}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	h := ListFlags(s)
+
+	t.Setenv("FLAGS_LIST_LIMIT", "")
+
+	rec := doRequest(t, h, http.MethodGet, "/flags", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var list []store.Flag
+	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("expected 3 flags (no limit), got %d", len(list))
+	}
+}
+
 func TestGetFlagFound(t *testing.T) {
 	s := store.NewStore()
 	if err := s.Create(store.Flag{Key: "k", Enabled: true, RolloutPercent: 10}); err != nil {
@@ -322,6 +370,25 @@ func TestUpdateFlagDescriptionOnly(t *testing.T) {
 	f := decodeFlag(t, rec)
 	if f.Description != "new" || !f.Enabled || f.RolloutPercent != 50 {
 		t.Fatalf("unexpected merge result: %+v", f)
+	}
+}
+
+func TestUpdateFlagDeletedBetweenGetAndUpdate(t *testing.T) {
+	s := store.NewStore()
+	if err := s.Create(store.Flag{Key: "k", Enabled: false}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Simulate a concurrent delete: the handler's Get succeeds, then the flag
+	// is removed before Update runs.
+	if !s.Delete("k") {
+		t.Fatalf("delete: %v", "flag not present")
+	}
+
+	h := UpdateFlag(s)
+	rec := doRequest(t, h, http.MethodPut, "/flags/k", "k", `{"enabled":true}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
